@@ -1019,7 +1019,7 @@ def smooth_l1_loss(y_true, y_pred):
     return loss
 
 
-def rpn_class_loss_graph(rpn_match, rpn_class_logits):
+def rpn_class_loss_graph(rpn_match, rpn_class_logits, input_weight):
     """RPN anchor classifier loss.
 
     rpn_match: [batch, anchors, 1]. Anchor match type. 1=positive,
@@ -1040,11 +1040,13 @@ def rpn_class_loss_graph(rpn_match, rpn_class_logits):
     loss = K.sparse_categorical_crossentropy(target=anchor_class,
                                              output=rpn_class_logits,
                                              from_logits=True)
+    loss = loss * input_weight
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
 
-def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox):
+def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox,
+                        input_weight):
     """Return the RPN bounding box loss graph.
 
     config: the model config object.
@@ -1068,13 +1070,15 @@ def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox):
                                    config.IMAGES_PER_GPU)
 
     loss = smooth_l1_loss(target_bbox, rpn_bbox)
-    
+    for _ in range(len(loss.shape)-1):
+        loss = K.mean(loss, axis=-1)
+    loss = loss * input_weight 
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
 
 def mrcnn_class_loss_graph(target_class_ids, pred_class_logits,
-                           active_class_ids):
+                           active_class_ids, input_weight):
     """Loss for the classifier head of Mask RCNN.
 
     target_class_ids: [batch, num_rois]. Integer class IDs. Uses zero
@@ -1101,7 +1105,7 @@ def mrcnn_class_loss_graph(target_class_ids, pred_class_logits,
 
     # Erase losses of predictions of classes that are not in the active
     # classes of the image.
-    loss = loss * pred_active
+    loss = loss * pred_active * input_weight
 
     # Computer loss mean. Use only predictions that contribute
     # to the loss to get a correct mean.
@@ -1109,7 +1113,8 @@ def mrcnn_class_loss_graph(target_class_ids, pred_class_logits,
     return loss
 
 
-def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
+def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox,
+                          input_weight):
     """Loss for Mask R-CNN bounding box refinement.
 
     target_bbox: [batch, num_rois, (dy, dx, log(dh), log(dw))]
@@ -1133,14 +1138,16 @@ def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
     pred_bbox = tf.gather_nd(pred_bbox, indices)
 
     # Smooth-L1 Loss
-    loss = K.switch(tf.size(target_bbox) > 0,
-                    smooth_l1_loss(y_true=target_bbox, y_pred=pred_bbox),
-                    tf.constant(0.0))
-    loss = K.mean(loss)
+    loss = smooth_l1_loss(y_true=target_bbox, y_pred=pred_bbox)
+    for _ in range(len(loss.shape)-1):
+        loss = K.mean(loss, axis=-1)
+    loss = loss * input_weight
+    loss = K.switch(tf.size(target_bbox) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
 
-def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
+def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks,
+                          input_weight):
     """Mask binary cross-entropy loss for the masks head.
 
     target_masks: [batch, num_rois, height, width].
@@ -1172,10 +1179,11 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
 
     # Compute binary cross entropy. If no positive ROIs, then return 0.
     # shape: [batch, roi, num_classes]
-    loss = K.switch(tf.size(y_true) > 0,
-                    K.binary_crossentropy(target=y_true, output=y_pred),
-                    tf.constant(0.0))
-    loss = K.mean(loss)
+    loss = K.binary_crossentropy(target=y_true, output=y_pred)
+    for _ in range(len(loss.shape)-1):
+        loss = K.mean(loss, axis=-1)
+    loss = loss * input_weight
+    loss = K.switch(tf.size(y_true) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
 
@@ -1856,6 +1864,9 @@ class MaskRCNN():
             shape=[None, None, config.IMAGE_SHAPE[2]], name="input_image")
         input_image_meta = KL.Input(shape=[config.IMAGE_META_SIZE],
                                     name="input_image_meta")
+        # Init sample_weight as input
+        input_sample_weight = KL.Input(shape=[1], name="input_sample_weight")
+
         if mode == "training":
             # RPN GT
             input_rpn_match = KL.Input(
@@ -2007,19 +2018,21 @@ class MaskRCNN():
             output_rois = KL.Lambda(lambda x: x * 1, name="output_rois")(rois)
 
             # Losses
+            # add input_sample_weight here
             rpn_class_loss = KL.Lambda(lambda x: rpn_class_loss_graph(*x), name="rpn_class_loss")(
-                [input_rpn_match, rpn_class_logits])
+                [input_rpn_match, rpn_class_logits, input_sample_weight])
             rpn_bbox_loss = KL.Lambda(lambda x: rpn_bbox_loss_graph(config, *x), name="rpn_bbox_loss")(
-                [input_rpn_bbox, input_rpn_match, rpn_bbox])
+                [input_rpn_bbox, input_rpn_match, rpn_bbox, input_sample_weight])
             class_loss = KL.Lambda(lambda x: mrcnn_class_loss_graph(*x), name="mrcnn_class_loss")(
-                [target_class_ids, mrcnn_class_logits, active_class_ids])
+                [target_class_ids, mrcnn_class_logits,
+                 active_class_ids, input_sample_weight])
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
-                [target_bbox, target_class_ids, mrcnn_bbox])
+                [target_bbox, target_class_ids, mrcnn_bbox, input_sample_weight])
             mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
-                [target_mask, target_class_ids, mrcnn_mask])
+                [target_mask, target_class_ids, mrcnn_mask, input_sample_weight])
 
             # Model
-            inputs = [input_image, input_image_meta,
+            inputs = [input_image, input_image_meta, input_sample_weight,
                       input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks]
             if not config.USE_RPN_ROIS:
                 inputs.append(input_rois)
