@@ -1,5 +1,41 @@
 # Mask R-CNN for Object Detection and Segmentation
 
+In this work, I try to add ***sample weight*** in model.
+All modifications occur in [model.py](mrcnn/model.py) build() and data_generator().
+
+Set the weight for each type of sample by identifying the keyword of the file name, and pass it into the network as input. 
+
+Suppose we now have two datasets to be mixed trained, a high-quality
+dataset and a low-quality dataset. Here we want to give a larger weight
+to high-quality dataset and a lower weight to low-quality dataset.
+
+For example, we give a keyword *k1* to high-quality dataset and a
+keyword *k2* to low-quality dataset as a prefix in filename.
+
+such as:
+```
+-/coco/data/annotations/
+  --...
+-/coco/data/train2014/
+  --k1_image1.png
+  --k1_image2.png
+  --k2_image3.png
+  --k2_image4.png
+  --...
+-/coco/data/val2014/
+  --...
+```
+And we can set weight by modify data_generator.py in [model.py](/mrcnn/model.py):
+```
+batch_weights[b] = w1 if 'k1' in image_path else w2
+```
+
+The rule here is not fixed. You can rewrite the function data_generator() in [model.py](mrcnn/model.py) arrording your need. 
+Note: the shape of batch_weights must be \[batch_size, 1\].
+
+
+------------------
+
 This is an implementation of [Mask R-CNN](https://arxiv.org/abs/1703.06870) on Python 3, Keras, and TensorFlow. The model generates bounding boxes and segmentation masks for each instance of an object in the image. It's based on Feature Pyramid Network (FPN) and a ResNet101 backbone.
 
 ![Instance Segmentation Sample](assets/street.png)
