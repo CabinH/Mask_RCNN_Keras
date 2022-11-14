@@ -1786,8 +1786,9 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
-            # Add weight
-            batch_weights[b] = 0.5 if '' in image_path else 1.0
+            # Add weight (add any "keyword" in file_name to
+            # distinguish different sample)
+            batch_weights[b] = 0.5 if '(keyword)' in image_path else 1.0 
             if random_rois:
                 batch_rpn_rois[b] = rpn_rois
                 if detection_targets:
